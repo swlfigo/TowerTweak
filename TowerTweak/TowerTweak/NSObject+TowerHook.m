@@ -11,12 +11,15 @@
 static void __attribute__((constructor)) initialize(void) {
     NSLog(@"++++++++ loaded ++++++++");
     
-    [objc_getClass("FNLicenseValidator") jr_swizzleMethod:NSSelectorFromString(@"validateTrialLicense:") withMethod:@selector(tweak_validateTrialLicense:) error:nil];
+//    [objc_getClass("FNLicenseValidator") jr_swizzleMethod:NSSelectorFromString(@"validateTrialLicense:") withMethod:@selector(tweak_validateTrialLicense:) error:nil];
 
     
     [objc_getClass("FNTrialLicense") jr_swizzleMethod:NSSelectorFromString(@"expirationDate") withMethod:@selector(tweak_expirationDate) error:nil];
 
-    
+    //Get Vaildate Key
+    [objc_getClass("FNLicenseHashGenerator") jr_swizzleMethod:NSSelectorFromString(@"hashSourceForDictionary:") withMethod:@selector(tweak_hashSourceForDictionary:) error:nil];
+    //Get Hash Salt
+    [objc_getClass("FNProductConfig") jr_swizzleMethod:NSSelectorFromString(@"setHashingSalt:") withMethod:@selector(tweak_sethashingSalt:) error:nil];
     
 }
 //TO1W(-[A-Z]{4}){4}
@@ -52,6 +55,14 @@ static void __attribute__((constructor)) initialize(void) {
     return newDate;
 }
 
+-(NSString *)tweak_hashSourceForDictionary:(NSDictionary*)dict{
+    NSString *tweakStr = [self tweak_hashSourceForDictionary:dict];
+    return tweakStr;
+}
+
+-(void)tweak_sethashingSalt:(NSString*)hashingSalt{
+    [self tweak_sethashingSalt:hashingSalt];
+}
 
 
 @end
