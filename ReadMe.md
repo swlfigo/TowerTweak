@@ -23,6 +23,10 @@ python ./TowerCodeGenerator.py -f 'plistPath(上方地址)'
 
 
 
+方法三: 使用软件自带 `License Framework `算号
+
+打开 `TowerCodeFramework` 文件夹中的工程,替换代码中 `plist` 路径(如上),运行工程自动算号 (2021.3.01, 基于Tower 6.3 Build273 Framework)
+
 
 
 ## 仅供学习交流，严禁用于商业用途
