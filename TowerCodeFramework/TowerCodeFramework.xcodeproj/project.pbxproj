@@ -44,6 +44,7 @@
 		2C6B5D1025EC866B0044EAEC /* FNLicensing.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = FNLicensing.framework; path = Framework/FNLicensing.framework; sourceTree = "<group>"; };
 		2C6B5D1425EC86980044EAEC /* FNFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = FNFoundation.framework; path = Framework/FNFoundation.framework; sourceTree = "<group>"; };
 		2C6B5D1725EC88D90044EAEC /* TowerHeader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TowerHeader.h; sourceTree = "<group>"; };
+		2CFDD1452C7C8C8B00C2DED2 /* TowerCodeFramework.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TowerCodeFramework.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -79,6 +80,7 @@
 		2C6B5D0625EC85F60044EAEC /* TowerCodeFramework */ = {
 			isa = PBXGroup;
 			children = (
+				2CFDD1452C7C8C8B00C2DED2 /* TowerCodeFramework.entitlements */,
 				2C6B5D0725EC85F60044EAEC /* main.m */,
 				2C6B5D1725EC88D90044EAEC /* TowerHeader.h */,
 			);
@@ -272,8 +274,9 @@
 		2C6B5D0C25EC85F60044EAEC /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TowerCodeFramework/TowerCodeFramework.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = XAWR4AU4TQ;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -286,8 +289,9 @@
 		2C6B5D0D25EC85F60044EAEC /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TowerCodeFramework/TowerCodeFramework.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = XAWR4AU4TQ;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
