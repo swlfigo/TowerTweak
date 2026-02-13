@@ -3,66 +3,82 @@
 //  TowerTweak
 //
 //  Created by Sylar on 2020/11/29.
+//  Updated for Tower 10.x startup bypass.
 //
 
 #import "NSObject+TowerHook.h"
 #import <objc/runtime.h>
+
+// ============================================================
+// Tower 10.x 启动弹窗绕过 + 许可证 Hook (ObjC Swizzle)
+//
+// sub_1007F1F40 的 patch 通过 patch.sh 直接写入二进制文件
+// 这里只做 ObjC 层面的 hook:
+//
+// Hook 1: -[GTApplicationStatus isValidProductStatus] → return YES
+//         让 openInitialWindowIfNeeded: 直接显示主窗口
+//
+// Hook 2: -[FNTrialLicense expirationDate] → 2099 年
+//         试用到期日期延长 (兼容旧版逻辑)
+//
+// Hook 3: -[LicenseInfoButton initWithFrame:] → return nil
+//         隐藏工具栏 License 提示按钮
+// ============================================================
+
 @implementation NSObject (TowerHook)
+
 static void __attribute__((constructor)) initialize(void) {
-    NSLog(@"++++++++ loaded ++++++++");
-    
-//    [objc_getClass("FNLicenseValidator") jr_swizzleMethod:NSSelectorFromString(@"validateTrialLicense:") withMethod:@selector(tweak_validateTrialLicense:) error:nil];
+    NSLog(@"[TowerTweak] ++++++++ loaded ++++++++");
 
-    
-    [objc_getClass("FNTrialLicense") jr_swizzleMethod:NSSelectorFromString(@"expirationDate") withMethod:@selector(tweak_expirationDate) error:nil];
+    // ---- Hook 1: isValidProductStatus → YES ----
+    Class appStatusClass = objc_getClass("GTApplicationStatus");
+    if (appStatusClass) {
+        [appStatusClass jr_swizzleMethod:NSSelectorFromString(@"isValidProductStatus")
+                              withMethod:@selector(tweak_isValidProductStatus)
+                                   error:nil];
+        NSLog(@"[TowerTweak] hooked isValidProductStatus");
+    }
 
-    //Get Vaildate Key
-    [objc_getClass("FNLicenseHashGenerator") jr_swizzleMethod:NSSelectorFromString(@"hashSourceForDictionary:") withMethod:@selector(tweak_hashSourceForDictionary:) error:nil];
-    //Get Hash Salt
-    [objc_getClass("FNProductConfig") jr_swizzleMethod:NSSelectorFromString(@"setHashingSalt:") withMethod:@selector(tweak_sethashingSalt:) error:nil];
-    
-}
-//TO1W(-[A-Z]{4}){4}
--(id)tweak_tower1WindowsLicenseValidationPattern{
-    id pattern = [self tweak_tower1WindowsLicenseValidationPattern];
-    return pattern;
-}
-//TO2M(-[A-Z]{4}){4}
--(id)tweak_tower2LicenseValidationPattern{
-    id pattern = [self tweak_tower2LicenseValidationPattern];
-    return pattern;
-}
-//TOWR(-[A-Z]{4}){4}
-//TOWR-AFDC-AFDC-AFDC-AFDC
-//新版
+    // ---- Hook 2: Trial 过期日期延长 ----
+    Class trialClass = objc_getClass("FNTrialLicense");
+    if (trialClass) {
+        [trialClass jr_swizzleMethod:NSSelectorFromString(@"expirationDate")
+                          withMethod:@selector(tweak_expirationDate)
+                               error:nil];
+        NSLog(@"[TowerTweak] hooked FNTrialLicense.expirationDate");
+    }
 
+    // ---- Hook 3: 隐藏 License 提示按钮 ----
+    Class licenseButtonClass = objc_getClass("_TtC5Tower17LicenseInfoButton");
+    if (licenseButtonClass) {
+        [licenseButtonClass jr_swizzleMethod:NSSelectorFromString(@"initWithFrame:")
+                                 withMethod:@selector(tweak_initWithFrame:)
+                                      error:nil];
+        NSLog(@"[TowerTweak] hooked LicenseInfoButton");
+    }
 
-
-- (char)tweak_validateTrialLicense:(id)v1{
-    char a = [self tweak_validateTrialLicense:v1];
-    return '\1';
-    return a;
+    NSLog(@"[TowerTweak] ++++++++ all hooks installed ++++++++");
 }
 
--(NSDate *)tweak_expirationDate{
-//    NSDate *date = [self tweak_expirationDate];
-    NSString *dateString = @"2099-12-27 08:08:08";
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init] ;
-    [formatter setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
-    formatter.timeZone = [NSTimeZone systemTimeZone];
-    //NSString转NSDate
-    NSDate *newDate=[formatter dateFromString:dateString];
-    return newDate;
+#pragma mark - isValidProductStatus → YES
+
+- (BOOL)tweak_isValidProductStatus {
+    return YES;
 }
 
--(NSString *)tweak_hashSourceForDictionary:(NSDictionary*)dict{
-    NSString *tweakStr = [self tweak_hashSourceForDictionary:dict];
-    return tweakStr;
+#pragma mark - Trial expirationDate → 2099
+
+- (NSDate *)tweak_expirationDate {
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    [fmt setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
+    fmt.timeZone = [NSTimeZone systemTimeZone];
+    return [fmt dateFromString:@"2099-12-27 08:08:08"];
 }
 
--(void)tweak_sethashingSalt:(NSString*)hashingSalt{
-    [self tweak_sethashingSalt:hashingSalt];
-}
+#pragma mark - 隐藏 LicenseInfoButton
 
+- (id)tweak_initWithFrame:(CGRect)rect {
+    return nil;
+}
 
 @end

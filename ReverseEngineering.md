@@ -446,3 +446,108 @@ def patch_trial(plist_path: str):
 | 10.0 | `JuD324AiNyS89oTtS10sVyJoUaAgNv1q` | 相同 | 已验证 |
 
 算号核心算法和 hashingSalt 在 6.1 到 10.0 之间保持不变。
+
+---
+
+## 启动弹窗流程分析 (Tower 10.x)
+
+> 基于 Tower 10.0 主二进制 ARM64 切片逆向分析。
+
+### 启动调用链
+
+```
+applicationWillFinishLaunching:
+  └→ [GTApplicationController initializeApplication]
+       └→ [GTApplicationController initialize]
+       └→ [GTProductController reloadStatus:NO]
+            └→ FNLicenseManager.loadProductStatus
+            └→ [GTApplicationStatus updateProductStatus:]
+
+applicationDidFinishLaunching:
+  └→ sub_1006266A4
+       ├→ [GTApplicationFlags incrementStartupCount]
+       └→ sub_10088A2C4(callback=sub_100627B14)
+            └→ sub_1007F1F40()   ← 【核心状态判断】
+                 │
+                 ├→ return 0 (isGettingStartedCompleted=YES)
+                 │    → flags.isLaunched = YES
+                 │    → callback → launchApplication
+                 │         └→ openInitialWindowIfNeeded:
+                 │              └→ hasValidProductStatus? ← 【第二道检查】
+                 │                   ├→ YES → 显示主窗口
+                 │                   └→ NO  → 什么都不做
+                 │
+                 └→ return 1~6 (各种无效状态)
+                      → sub_10099AF7C() → runModalForWindow:
+                      → 显示 OnboardingWindow 模态弹窗 ❌
+```
+
+### sub_1007F1F40 返回值映射
+
+| 返回值 | 条件 | 弹窗类型 |
+|--------|------|----------|
+| 0 | `isGettingStartedCompleted == YES` | 无弹窗，正常启动 ✅ |
+| 1 | `productStatus.isWithoutStatus` | Welcome 欢迎页 |
+| 2 | `productStatus.isActiveTrial` | Trial 试用注册页 |
+| 3 | `productStatus.isExpiredTrial` | Trial 过期提示 |
+| 4 | `productStatus.isExpiredLicense` | License 过期提示 |
+| 5 | `productStatus.isRevokedLicense` | License 吊销提示 |
+| 6 | `isGettingStartedCompleted == NO` | Getting Started 引导页 |
+
+### openInitialWindowIfNeeded: 逻辑
+
+```objc
+// 0x10033C560
+- (void)openInitialWindowIfNeeded:(id)sender {
+    if ([self hasValidProductStatus]) {
+        // hasValidProductStatus → [GTApplicationStatus isValidProductStatus]
+        //                       → [FNProductStatus isValid]
+        if (![OnboardingWindowController.shared.window isVisible]) {
+            if ([GTMainWindowControllerManager.sharedManager.windowControllers isEmpty]) {
+                if ([GeneralSettings.shared showQuickStartWindowOnLaunch])
+                    [self showQuickStartWindow:sender];
+                else
+                    [self openNewWindow:sender];
+            }
+        }
+    }
+    // 如果 hasValidProductStatus == NO，直接返回，不显示任何窗口
+}
+```
+
+### canOpenWindows 检查链
+
+```objc
+// canOpenWindows → isUserAuthorizedToRunApplication
+- (BOOL)isUserAuthorizedToRunApplication {
+    if (![self isValidProductStatus]
+        && ![self isUserAllowedToRunApplicationUntilNextRestart])
+        return NO;
+    if (![self.flags isLaunched])
+        return NO;
+    return [self.flags isGettingStartedCompleted];
+}
+```
+
+### 二进制 Patch 方案
+
+| Patch | 虚拟地址 | FAT 文件偏移 (ARM64) | 原始字节 | Patch 字节 | 效果 |
+|-------|---------|---------------------|----------|-----------|------|
+| sub_1007F1F40 | `0x1007F1F40` | `0x1DB9F40` | `FF 83 01 D1 F8 5F 02 A9` | `00 00 80 52 C0 03 5F D6` | `MOV W0,#0; RET` 跳过启动弹窗 |
+| isValidProductStatus | `0x1004CC1F4` | `0x1A941F4` | `F4 4F BE A9 FD 7B 01 A9` | `20 00 80 52 C0 03 5F D6` | `MOV W0,#1; RET` 产品状态始终有效 |
+
+> FAT Binary 布局: x86_64 @ offset `0x4000`, ARM64 @ offset `0x15C8000`。
+> ARM64 __TEXT 段: vmaddr=`0x100000000`, fileoff=`0x0`。
+> 计算公式: `文件偏移 = ARM64偏移 + (虚拟地址 - 0x100000000)`
+
+### Dylib Hook 方案（运行时 Swizzle）
+
+```objc
+// 1. ObjC 方法替换 - isValidProductStatus
+[GTApplicationStatus jr_swizzleMethod:@selector(isValidProductStatus)
+                           withMethod:@selector(tweak_isValidProductStatus) error:nil];
+
+// 2. 运行时内存 Patch - sub_1007F1F40 (非 ObjC 方法，需直接 patch)
+//    通过计算 image slide + 已知偏移定位函数地址
+//    使用 mach_vm_protect 修改页属性后写入 MOV W0,#0; RET
+```

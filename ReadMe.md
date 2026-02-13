@@ -1,33 +1,66 @@
-# Tower
+# TowerTweak
 
-好用的 Git App (逃
+Tower Git macOS App 逆向研究 (6.1 ~ 10.x)
 
-用于 Tower Git OSX APP Crack (基于6.1版本)
+## 一键 Patch（推荐）
 
-方法一: Hook机制(UI上Path掉美观)
-
-~~直接运行 `TowerTweak` 文件夹中项目即可(软件默认位置在 `/Applications/Tower.app` 中,如在其他位置，自行改脚本路径与 `Run` 路径)~~ 不建议使用,因为需要重签名Framework,个人证书将在一段时间后过期，打开App即闪退,需要重新运行项目
-
-
-
-方法二:类似注册机机制(UI上还是提示过期,不影响使用)
-
-```python
-// 首先关闭 Tower
-// Tower Trail License 地址在
-// /Users/用户/Library/Application Support/com.fournova.Tower3/一大串英文+数字文件夹/trial.plist
-// 基于Py3
-
-python ./TowerCodeGenerator.py -f 'plistPath(上方地址)'
+```bash
+# 在项目根目录执行
+./patch.sh
 ```
 
+脚本自动完成：编译 dylib → 复制 Tower.app 到桌面 → 注入 dylib → 重签名
 
+输出：`~/Desktop/Tower.app`（原版 `/Applications/Tower.app` 不受影响）
 
-方法三: 使用软件自带 `License Framework `算号
+### 原理
 
-打开 `TowerCodeFramework` 文件夹中的工程,替换代码中 `plist` 路径(如上),运行工程自动算号 (2021.3.01, 基于Tower 6.3 Build273 Framework)
+通过 `insert_dylib` 注入 `TowerTweak.dylib`，dylib 在加载时执行以下 hook：
 
+| Hook | 目标 | 效果 |
+|------|------|------|
+| Runtime Patch | `sub_1007F1F40` | `MOV W0,#0; RET` 跳过启动弹窗 |
+| ObjC Swizzle | `-[GTApplicationStatus isValidProductStatus]` | 返回 YES，显示主窗口 |
+| ObjC Swizzle | `-[FNTrialLicense expirationDate]` | 返回 2099 年 |
+| ObjC Swizzle | `-[LicenseInfoButton initWithFrame:]` | 返回 nil，隐藏按钮 |
 
+## 方法二：算号（修改 plist）
+
+```bash
+# 自动查找并修改 trial.plist 过期时间
+python3 ./TowerCodeGenerator.py
+
+# 或指定路径
+python3 ./TowerCodeGenerator.py -f '/path/to/trial.plist'
+
+# 生成正式订阅许可证
+python3 ./TowerCodeGenerator.py --gen-license
+```
+
+许可证路径：`~/Library/Application Support/com.fournova.Tower3/{machineUUID}/trial.plist`
+
+## 方法三：Framework 算号
+
+打开 `TowerCodeFramework` 中的工程，替换 plist 路径后运行。
+
+## 项目结构
+
+```
+TowerTweak/
+├── patch.sh                 # 一键 patch 脚本
+├── TowerCodeGenerator.py    # Python 算号工具
+├── ReverseEngineering.md    # 逆向分析文档（算号 + 启动流程）
+├── FNLicenseFrameworkHeaderExport.h
+├── TowerHeader/             # class-dump 导出头文件
+├── TowerCodeFramework/      # Framework 算号工程
+└── TowerTweak/
+    ├── insert_dylib          # Mach-O dylib 注入工具
+    ├── TowerTweak.xcodeproj  # Xcode 工程（可选）
+    └── TowerTweak/
+        ├── NSObject+TowerHook.m   # 核心 hook 代码
+        ├── NSButton+TowerHook.m
+        ├── TowerHeader.h          # Tower 类声明
+        └── Utils/JRSwizzle.*      # ObjC 方法交换库
+```
 
 ## 仅供学习交流，严禁用于商业用途
-
