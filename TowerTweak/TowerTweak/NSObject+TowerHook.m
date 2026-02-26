@@ -3,17 +3,14 @@
 //  TowerTweak
 //
 //  Created by Sylar on 2020/11/29.
-//  Updated for Tower 10.x startup bypass.
+//  Updated for Tower 15.x startup bypass.
 //
 
 #import "NSObject+TowerHook.h"
 #import <objc/runtime.h>
 
 // ============================================================
-// Tower 10.x 启动弹窗绕过 + 许可证 Hook (ObjC Swizzle)
-//
-// sub_1007F1F40 的 patch 通过 patch.sh 直接写入二进制文件
-// 这里只做 ObjC 层面的 hook:
+// Tower 15.x 启动弹窗绕过 + 许可证 Hook (ObjC Swizzle)
 //
 // Hook 1: -[GTApplicationStatus isValidProductStatus] → return YES
 //         让 openInitialWindowIfNeeded: 直接显示主窗口
@@ -31,6 +28,17 @@
 // Hook 5: -[GTToolbarController updateLicenseInfoToolbarItemVisibility] → no-op
 //         -[GTToolbarController configureLicenseInfoToolbarItem:] → no-op
 //         隐藏工具栏 License Info 项
+//
+// Hook 6: -[GTApplicationFlags isGettingStartedCompleted] → return YES
+//         Tower 15.x 新增检查: openNewWindow: / showQuickStartWindow:
+//         → canOpenWindows → isUserAuthorizedToRunApplication
+//         → 需要 isGettingStartedCompleted == YES 才允许创建主窗口
+//
+// Hook 7: -[FNProductStatus isWithoutStatus/isActiveTrial/isExpiredTrial
+//           /isExpiredLicense/isRevokedLicense] → return NO
+//         启动决策函数 sub_10083A544 按顺序检查这 5 个状态,
+//         任何一个命中就直接显示对应的 Onboarding 弹窗.
+//         全部返回 NO 后才会走到 isGettingStartedCompleted 检查 → return 0 (直接启动)
 // ============================================================
 
 @implementation NSObject (TowerHook)
@@ -101,6 +109,36 @@ static void __attribute__((constructor)) initialize(void) {
         NSLog(@"[TowerTweak] hooked GTToolbarController (licenseInfoToolbarItem)");
     }
 
+    // ---- Hook 6: isGettingStartedCompleted → YES ----
+    // Tower 15.x: openNewWindow:/showQuickStartWindow: 内部调用 canOpenWindows
+    // → isUserAuthorizedToRunApplication → 要求 isGettingStartedCompleted == YES
+    // 不 hook 此方法会导致: 启动弹窗被跳过但主窗口无法创建
+    Class flagsClass = objc_getClass("GTApplicationFlags");
+    if (flagsClass) {
+        [flagsClass jr_swizzleMethod:NSSelectorFromString(@"isGettingStartedCompleted")
+                          withMethod:@selector(tweak_isGettingStartedCompleted)
+                               error:nil];
+        NSLog(@"[TowerTweak] hooked GTApplicationFlags.isGettingStartedCompleted");
+    }
+
+    // ---- Hook 7: 跳过启动弹窗 (产品状态检查全部返回 NO) ----
+    // 启动决策函数依次检查: isWithoutStatus → isActiveTrial → isExpiredTrial
+    // → isExpiredLicense → isRevokedLicense, 任一命中就显示 Onboarding 弹窗.
+    // 全部返回 NO 才走到 isGettingStartedCompleted (Hook 6) → 直接启动
+    // 注意: 不能用 JRSwizzle 将多个 selector 交换到同一个方法 (交换会级联覆盖),
+    //       使用 method_setImplementation 直接替换 IMP
+    Class productStatusClass = objc_getClass("FNProductStatus");
+    if (productStatusClass) {
+        IMP returnNO = imp_implementationWithBlock(^BOOL(id _self) { return NO; });
+        NSArray *sels = @[@"isWithoutStatus", @"isActiveTrial", @"isExpiredTrial",
+                          @"isExpiredLicense", @"isRevokedLicense"];
+        for (NSString *sel in sels) {
+            Method m = class_getInstanceMethod(productStatusClass, NSSelectorFromString(sel));
+            if (m) method_setImplementation(m, returnNO);
+        }
+        NSLog(@"[TowerTweak] hooked FNProductStatus (all status checks → NO)");
+    }
+
     NSLog(@"[TowerTweak] ++++++++ all hooks installed ++++++++");
 }
 
@@ -162,5 +200,11 @@ static void __attribute__((constructor)) initialize(void) {
 
 - (void)tweak_updateLicenseInfoToolbarItemVisibility {}
 - (void)tweak_configureLicenseInfoToolbarItem:(id)arg {}
+
+#pragma mark - isGettingStartedCompleted → YES
+
+- (BOOL)tweak_isGettingStartedCompleted {
+    return YES;
+}
 
 @end
