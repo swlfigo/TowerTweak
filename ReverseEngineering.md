@@ -1,6 +1,6 @@
-# Tower 10.0 许可证逆向分析
+# Tower 许可证逆向分析
 
-> 基于 Tower 10.0 (macOS) 的 FNLicensing.framework 逆向分析，使用 IDA Pro + Hex-Rays 反编译。
+> 基于 Tower 10.0 / 15.x (macOS) 的 FNLicensing.framework 逆向分析，使用 IDA Pro + Hex-Rays 反编译。
 
 ## 目录
 
@@ -12,6 +12,8 @@
 - [状态判定流程](#状态判定流程)
 - [运行时参数提取](#运行时参数提取)
 - [逆向工具与方法](#逆向工具与方法)
+- [Tower 15.x 启动流程分析](#tower-15x-启动流程分析)
+- [Tower 15.x Patch 方案](#tower-15x-patch-方案)
 
 ---
 
@@ -444,8 +446,9 @@ def patch_trial(plist_path: str):
 | 6.1 | `JuD324AiNyS89oTtS10sVyJoUaAgNv1q` | 相同 | 已验证 |
 | 6.3 (Build 273) | `JuD324AiNyS89oTtS10sVyJoUaAgNv1q` | 相同 | 已验证 |
 | 10.0 | `JuD324AiNyS89oTtS10sVyJoUaAgNv1q` | 相同 | 已验证 |
+| 15.1 (Build 524) | `JuD324AiNyS89oTtS10sVyJoUaAgNv1q` | 相同 | 已验证 |
 
-算号核心算法和 hashingSalt 在 6.1 到 10.0 之间保持不变。
+算号核心算法和 hashingSalt 在 6.1 到 15.1 之间保持不变。
 
 ---
 
@@ -551,3 +554,196 @@ applicationDidFinishLaunching:
 //    通过计算 image slide + 已知偏移定位函数地址
 //    使用 mach_vm_protect 修改页属性后写入 MOV W0,#0; RET
 ```
+
+---
+
+## Tower 15.x 启动流程分析
+
+> 基于 Tower 15.1 (Build 524) ARM64 逆向分析，使用 IDA Pro + IDA MCP。
+> Tower 15.x 重构了启动决策流程，增加了 `canOpenWindows` 检查链，10.x 的 Patch 方案不再完全适用。
+
+### 与 Tower 10.x 的关键差异
+
+| 差异点 | Tower 10.x | Tower 15.x |
+|--------|-----------|-----------|
+| 启动决策函数 | `sub_1007F1F40` | `sub_10083A544` |
+| 主窗口创建检查 | `hasValidProductStatus` | `canOpenWindows` → `isUserAuthorizedToRunApplication` |
+| 窗口创建条件 | 产品状态有效即可 | 产品状态有效 + `isLaunched` + `isGettingStartedCompleted` |
+| ObjC 类变化 | - | 新增 Swift 类 `_TtC5Tower17LicenseInfoButton`、`_TtC5Tower22LicenseInfoToolbarItem` |
+| 二进制 Patch | 需要 patch 2 个地址 | **不再需要** (纯 ObjC 运行时 Hook 即可) |
+
+### 启动调用链
+
+```
+applicationDidFinishLaunching:
+  └→ sub_100648154
+       ├→ [GTApplicationFlags incrementStartupCount]
+       └→ sub_1008DB5A0(callback=launchCallback)
+            └→ sub_10083A544()   ← 【核心启动决策函数】
+                 │
+                 ├→ return 0 (所有状态检查通过)
+                 │    → flags.isLaunched = YES
+                 │    → callback → launchApplication (0x100343d54)
+                 │         └→ openInitialWindowIfNeeded: (0x100343f60)
+                 │              └→ canOpenWindows (0x100343c48)
+                 │                   └→ isUserAuthorizedToRunApplication (0x1004d4e10)
+                 │                        ├→ isValidProductStatus? (0x1004d4dd4)
+                 │                        ├→ isLaunched?
+                 │                        └→ isGettingStartedCompleted?
+                 │                             └→ 全部 YES → 显示主窗口 ✅
+                 │
+                 └→ return 1~6 (各种无效状态)
+                      → sub_1008DBA58 (Onboarding 完成回调)
+                      → 显示 OnboardingWindow 模态弹窗 ❌
+```
+
+### sub_10083A544 启动决策函数
+
+```
+sub_10083A544()  // 0x10083A544
+│
+├→ productStatus.isWithoutStatus == YES?  → return 1 (Welcome)
+├→ productStatus.isActiveTrial == YES?    → return 2 (Continue Trial)
+├→ productStatus.isExpiredTrial == YES?   → return 3 (Trial Expired)
+├→ productStatus.isExpiredLicense == YES? → return 4 (License Expired)
+├→ productStatus.isRevokedLicense == YES? → return 5 (License Revoked)
+├→ isGettingStartedCompleted == NO?       → return 6 (Getting Started)
+└→ 以上全不命中                            → return 0 (正常启动) ✅
+```
+
+**关键发现**: 此函数按**严格顺序**依次检查产品状态，一旦匹配到就立即返回对应弹窗类型。
+仅 hook `isGettingStartedCompleted → YES` 不够，因为 `isActiveTrial` 在它之前被检查。
+
+### isUserAuthorizedToRunApplication (Tower 15.x 新增检查链)
+
+```objc
+// 0x1004d4e10
+- (BOOL)isUserAuthorizedToRunApplication {
+    // 第一道: 产品状态有效 或 允许本次启动运行
+    if (![self isValidProductStatus]
+        && ![self isUserAllowedToRunApplicationUntilNextRestart])
+        return NO;
+    // 第二道: 必须已完成启动流程
+    if (![self.flags isLaunched])
+        return NO;
+    // 第三道: 必须已完成 Getting Started (15.x 新增)
+    return [self.flags isGettingStartedCompleted];
+}
+```
+
+**Tower 15.x 新变化**: `openNewWindow:` 和 `showQuickStartWindow:` 都调用 `canOpenWindows` → `isUserAuthorizedToRunApplication`，该方法需要三个条件全部满足：
+1. `isValidProductStatus == YES` (或 `isUserAllowedToRunApplicationUntilNextRestart`)
+2. `isLaunched == YES` (启动流程 callback 设置)
+3. `isGettingStartedCompleted == YES` (Tower 15.x 新增)
+
+### Onboarding 完成回调
+
+```
+sub_1008DBA58 (Onboarding Window 完成后的回调)
+│
+├→ flags.isLaunched = YES
+├→ 执行 launch callback (即 launchApplication)
+│    └→ openInitialWindowIfNeeded:
+└→ 此时 isLaunched=YES + isGettingStartedCompleted 由用户操作设置
+```
+
+当用户点击 "Continue your free trial" 后，Onboarding 流程完成，设置 `isLaunched=YES` 并调用 launch callback，此时 `isUserAuthorizedToRunApplication` 全部条件满足，主窗口正常显示。
+
+### 功能限制分析
+
+```objc
+// mustCheckFeatureAvailability
+- (BOOL)mustCheckFeatureAvailability {
+    return [self.productStatus isProductLicenseMode];
+}
+```
+
+**发现**: `mustCheckFeatureAvailability` 仅在 `isProductLicenseMode`（正式许可证模式）时返回 YES。
+这意味着试用模式 (`isTrialLicenseMode`) 下**不检查功能限制**，试用用户拥有所有功能。
+正式许可证反而会根据 `features` 字段限制功能（如按 plan 区分 Basic/Pro）。
+
+### 关键函数地址 (Tower 15.1 Build 524)
+
+| 函数 | 虚拟地址 | 类型 |
+|------|---------|------|
+| `sub_10083A544` (启动决策) | `0x10083A544` | C 函数 |
+| `sub_1008DB5A0` (Onboarding 入口) | `0x1008DB5A0` | C 函数 |
+| `sub_1008DBA58` (Onboarding 完成回调) | `0x1008DBA58` | C 函数 |
+| `sub_100648154` (didFinishLaunching 分发) | `0x100648154` | C 函数 |
+| `openInitialWindowIfNeeded:` | `0x100343f60` | ObjC |
+| `launchApplication` | `0x100343d54` | ObjC |
+| `canOpenWindows` | `0x100343c48` | ObjC |
+| `isUserAuthorizedToRunApplication` | `0x1004d4e10` | ObjC |
+| `isValidProductStatus` | `0x1004d4dd4` | ObjC |
+
+---
+
+## Tower 15.x Patch 方案
+
+> 纯 ObjC 运行时 Hook，无需二进制 Patch，版本更新无需重新查找地址。
+
+### 方案概述
+
+Tower 15.x 采用**纯 dylib 注入 + ObjC Runtime Hook** 方案，不再需要修改二进制中的硬编码地址。
+所有 Hook 基于 ObjC 方法名（selector），Tower 小版本更新不影响 Patch 有效性。
+
+### Hook 列表
+
+| # | 类 | 方法 | Hook 效果 | 技术 | 作用 |
+|---|---|------|----------|------|------|
+| 1 | `GTApplicationStatus` | `isValidProductStatus` | → return YES | JRSwizzle | 产品状态始终有效 |
+| 2 | `FNTrialLicense` | `expirationDate` | → 2099-12-27 | JRSwizzle | 试用到期日延长 |
+| 3 | `_TtC5Tower17LicenseInfoButton` | `initWithFrame:` / `initWithCoder:` | → hidden + zero-size | JRSwizzle | 隐藏 License 按钮 |
+| 3b | `_TtC5Tower22LicenseInfoToolbarItem` | `initWithItemIdentifier:` | → empty view | JRSwizzle | 隐藏工具栏 License 项 |
+| 4 | `GTMainWindowNavigationBarViewController` | `configureLicenseBadge` / `updateLicenseBadge` | → no-op | JRSwizzle | 隐藏导航栏 License 标签 |
+| 5 | `GTToolbarController` | `updateLicenseInfoToolbarItemVisibility` / `configureLicenseInfoToolbarItem:` | → no-op | JRSwizzle | 隐藏工具栏 License Info |
+| 6 | `GTApplicationFlags` | `isGettingStartedCompleted` | → return YES | JRSwizzle | 绕过 Getting Started 检查 |
+| 7 | `FNProductStatus` | `isWithoutStatus` / `isActiveTrial` / `isExpiredTrial` / `isExpiredLicense` / `isRevokedLicense` | → return NO | method_setImplementation | 跳过所有启动弹窗 |
+
+### Hook 7 技术细节
+
+Hook 7 不能使用 JRSwizzle（`method_exchangeImplementations`），因为将多个 selector 交换到同一个替换方法会产生级联覆盖问题：
+
+```
+// 错误方式: JRSwizzle 级联覆盖
+// swizzle isWithoutStatus ↔ tweak_returnNO  → OK
+// swizzle isActiveTrial   ↔ tweak_returnNO  → 此时 tweak_returnNO 已指向 isWithoutStatus 的原始 IMP
+//                                              → isActiveTrial 被交换到 isWithoutStatus，而非 return NO
+```
+
+正确方式：使用 `imp_implementationWithBlock` + `method_setImplementation` 直接替换 IMP：
+
+```objc
+IMP returnNO = imp_implementationWithBlock(^BOOL(id _self) { return NO; });
+NSArray *sels = @[@"isWithoutStatus", @"isActiveTrial", @"isExpiredTrial",
+                  @"isExpiredLicense", @"isRevokedLicense"];
+for (NSString *sel in sels) {
+    Method m = class_getInstanceMethod(productStatusClass, NSSelectorFromString(sel));
+    if (m) method_setImplementation(m, returnNO);
+}
+```
+
+### Patch 流程
+
+```
+patch.sh (简化后的 5 步流程):
+│
+├→ Step 1: 备份原始二进制 (Tower → Tower.bak)
+├→ Step 2: 编译 TowerTweak.dylib (clang -dynamiclib)
+├→ Step 3: 放入 dylib (→ Frameworks/TowerTweak.dylib)
+├→ Step 4: 注入 LC_LOAD_DYLIB (insert_dylib)
+└→ Step 5: 重签名 (codesign --force --deep --sign -)
+```
+
+**依赖**: 仅需 `clang` + `codesign`，无需 `python3`（已移除二进制 Patch 部分）。
+
+### 10.x 方案 vs 15.x 方案对比
+
+| 维度 | 10.x 方案 | 15.x 方案 |
+|------|----------|----------|
+| 二进制 Patch | 需要 (2 个地址) | 不需要 |
+| ObjC Hook | 2 个 (isValidProductStatus + expirationDate) | 7 组 (完整 UI + 启动流程) |
+| 版本更新适应 | 需重新查找地址 | 基于方法名，自动适应 |
+| 依赖 | clang + python3 + codesign | clang + codesign |
+| 启动弹窗绕过 | 二进制 patch `sub_1007F1F40` → return 0 | Hook FNProductStatus 5 个状态检查 → NO |
+| UI 隐藏 | 部分 | 完整 (按钮 + 工具栏 + 导航栏) |
