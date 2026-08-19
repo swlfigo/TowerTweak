@@ -5,25 +5,32 @@
 
 ---
 
-## 0. 背景:17.x 已换掉整套授权体系(与现有文档的差异)
+## 0. 背景:17.x 为混合架构,老算号机制仍然有效(RE-1 已完成)
 
-| 维度 | 旧方案 (6.1 ~ 15.x, 见 ReverseEngineering.md) | Tower 17.1 现状 |
-|------|----------------------------------------------|-----------------|
-| 授权框架 | ObjC `FNLicensing.framework` | **Swift `LicensingService`**(全新) |
-| 算法 | `MD5(hashSource + salt)`,salt=`JuD324...` | **已移除**,二进制内搜不到 salt / FNLicense* |
-| 授权模型 | 本地 plist + 机器绑定哈希 | **服务器激活**:`activateLicense(email:code:)` → `account.git-tower.com` → 设备激活 |
-| 本地存储 | `trial.plist` / `license.plist`(带 code 校验) | **NSUserDefaults 键 `GTLicenseActivationState`**(无签名 plist 文件) |
-| 运行时状态 | `FNProductStatus.mode` | Swift 类 `Tower.LicenseInfo`(`licenseType` / `daysLeft` / `revoked` / `expired`) |
-| 功能门控 | `mustCheckFeatureAvailability`(仅 license 模式检查) | Swift `FeatureAvailability` 枚举 + `ProFeatureSpec` |
+> ⚠️ 早期草稿曾误判「FNLicensing 被移除、算法失效」。经 RE-1 逆向核实:**该判断错误**。
+> 真相:17.x 保留旧 FNLicensing,并新增 Swift `LicensingService` 并存。
 
-**结论:老的「算号改 plist」对 17.1 完全失效,需要新方案。**
+| 维度 | 旧方案 (6.1 ~ 15.x) | Tower 17.1 现状 |
+|------|--------------------|-----------------|
+| 授权框架 | ObjC `FNLicensing.framework` | **仍在** + 新增 Swift `LicensingService`(并存) |
+| 算法 / salt | `MD5(hashSource+salt)`,salt=`JuD324...` | **均不变**;salt 改由 `HashingSalt.hashingSalt` 运行时数组拼接(混淆) |
+| 产品配置 | productVersion `10.0` | **不变**:`tower` / `10.0` / `numberOfTrialDays=30` |
+| 授权模型 | 本地 trial.plist/license.plist | 旧路径**仍在** + 新增 `activateLicenseWithEmail:licenseCode:` 服务器激活 |
+| 运行时状态 | `FNProductStatus.mode` | 旧 `GTProductController reloadStatus:` + 新 Swift `Tower.LicenseInfo` |
+| 功能门控 | `mustCheckFeatureAvailability`(trial 全解锁) | 新增 `FeatureAvailability` / `ProFeatureSpec`(是否沿用旧规则待确认) |
 
-### 已确认的关键事实
-- **持久化层无签名校验**:激活状态存于 UserDefaults `GTLicenseActivationState` / `GTLicenseActivationLastUpdatedDate`,读取路径未见 HMAC / 签名验证 → 篡改缓存(如过期时间)不会触发完整性报错(与实测一致)。
-- **二进制自带本地 license 生成器**:调试类 `GTDebugProductStatusMenuGenerator` 含命令
-  `Generate Valid Pro License`(action `generateProLicense:`)、`Generate Valid Basic License`、
-  `Generate Valid License with Other Machine UUID`、`Generate Expired/Revoked License` 等 →
-  **纯客户端构造「被 App 认可的 Pro license」的算法就在二进制里**。
+**结论:仓库现有 `TowerCodeGenerator.py` 算号方案对 17.x 依然有效,无需新算法。**
+
+### RE-1 已确认的关键事实
+- **salt 未变(强证据)**:明文搜不到是因 `HashingSalt.hashingSalt` 运行时用字符串数组 `joined("")` 拼接。
+  用老 salt `JuD324AiNyS89oTtS10sVyJoUaAgNv1q` 对现存 `trial.plist` 字段重算 `code`,与文件存储值
+  `d2944881663c...` **完全一致** → 算法与 salt 均未改变。
+- **旧机制完整**:`+[GTProductConfig defaultConfig]`(salt / machineUUID / baseURL)、`GTProductController`
+  (registerTrial / activateLicense / reloadStatus / trial.plist 读写)、`FNLicensing.framework`(随包发布)全在。
+- **新 Swift 层为附加**:`GTLicenseActivationState`(Int,无签名)是状态缓存,非权威判定(全库仅 1 处引用)。
+- **调试生成器不可用**:`generateProLicense:` 在 release 版无实现,此路不通(改用算号)。
+- **注意**:当前 `/Applications/Tower.app` 已被 `TowerTweak.dylib` 打补丁(有 Tower.bak),
+  故「改时间不报错」的行为证据被 hook 污染,不能单独作为验证;上面的 salt 重算是独立于补丁的静态证据。
 
 ---
 
