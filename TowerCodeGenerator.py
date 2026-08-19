@@ -5,12 +5,20 @@ import os
 import hashlib
 import glob
 
-# Tower 6.1 ~ 10.0 Tested
+# Tower 6.1 ~ 17.1 Tested
+# salt 自 6.1 至 17.1 未变；17.x 中它由 HashingSalt.hashingSalt 运行时字符串数组拼接（反搜索混淆）
 HASH_SALT = "JuD324AiNyS89oTtS10sVyJoUaAgNv1q"
 
-# FNProductLicense.dictionaryRepresentation 固定输出的 11 个 key（运行时验证）
-# code, email, expiration_date, license_code, machine, plan, product, revoked, type, user, uuid
-# 其中 revoked 为字符串 "false"/"true"，nil 属性用空字符串 "" 填充
+# ── Tower 17.1 逆向核实的 FNProductLicense.dictionaryRepresentation 精确 key 集 ──
+# 由 IDA 反编译 FNLicensing.framework 得到（key = FNLicenseKey* 常量的真实字符串值）：
+#   FNAbstractLicense: product / user / machine / type / code
+#   FNProductLicense : uuid(identifier) / license_code(masked) / email /
+#                      expiration_date(expires) / revoked("true"/"false") /
+#                      plan / plan_features(features 数组) / plan_uuid(planIdentifier)
+# 验证 = -[FNLicenseValidator validateProductLicense:]：generateHashForLicense == code（FNEqualStrings）
+# 算号 = hashSourceForDictionary：过滤 "code" → 排序 → 取值(user→config.userName、
+#        machine→config.machineUUID、数组排序后逗号连接) → 逗号连接 + salt → MD5
+# 注：本机 config.userName / machineUUID 恰为 trial.plist 中的 user / machine 值，故直接用其字面值即可。
 
 
 def generate_code(plist_dict: dict) -> str:
@@ -72,41 +80,57 @@ def read_trial_config(license_dir: str) -> dict:
     return {"machine": pl.get("machine", ""), "user": pl.get("user", "")}
 
 
-def generate_product_license(license_dir: str, email: str = "user@tower.com"):
+# 正式 Pro license 的功能集。Tower 17.x 正式 license 模式下按 plan_features 限制功能，
+# trial 模式则不做功能检查（全解锁）。plan_features 的具体 feature id 需在未打补丁的
+# 二进制上实测确认；留空数组即“无附加功能”。若只求全解锁，优先用 trial 路径（--patch-trial）。
+DEFAULT_PLAN_FEATURES = []  # 例如 ["pull_requests", "git_lfs", ...]，实测后填入
+
+
+def generate_product_license(license_dir: str, email: str = "user@tower.com",
+                             plan: str = "pro", plan_features=None):
     """
-    生成 Product License (license.plist)
-    基于 FNProductLicense.dictionaryRepresentation 运行时验证的固定 11 个 key
+    生成 Tower 17.1 正式 Product License (license.plist)
+
+    key 集与 -[FNProductLicense dictionaryRepresentation]（17.1 逆向核实）严格对齐：
+      product / user / machine / type / uuid / license_code / email /
+      expiration_date / revoked / plan / plan_features / plan_uuid / code
     """
     config = read_trial_config(license_dir)
     if not config.get("machine") or not config.get("user"):
         print("无法从 trial.plist 读取 machine/user，请确认 trial.plist 存在")
         return False
 
-    # 构造 Product License 字典
-    # dictionaryRepresentation 固定输出这 11 个 key，nil 属性用空字符串填充
+    if plan_features is None:
+        plan_features = DEFAULT_PLAN_FEATURES
+
+    # 全部 key 均赋非空值，确保 dictionaryRepresentation 会输出它们（可选属性 nil 时不入字典，
+    # 会导致算号 key 集不一致）。user/machine 的字面值在算号时会被 config 值覆盖，但必须存在。
     license_dict = {
-        "email": email,
-        "expiration_date": "2099-12-31T23:59:59Z",
-        "license_code": "",
-        "machine": config["machine"],
-        "plan": "pro",
         "product": "tower",
-        "revoked": "false",
-        "type": "LICENSE",
         "user": config["user"],
-        "uuid": "",
+        "machine": config["machine"],
+        "type": "LICENSE",
+        "uuid": "00000000-0000-0000-0000-000000000001",       # identifier
+        "license_code": "TOWER-PRO-0000-0000-0000-0000",       # masked
+        "email": email,
+        "expiration_date": "2099-12-31T23:59:59Z",             # expires（字符串）
+        "revoked": "false",
+        "plan": plan,
+        "plan_features": list(plan_features),                  # features 数组
+        "plan_uuid": "00000000-0000-0000-0000-0000000000pro"[:36],  # planIdentifier
     }
 
-    # 计算 code
+    # 计算 code（算号会自动:过滤 code、排序、数组逗号连接、拼 salt、MD5）
     license_dict["code"] = generate_code(license_dict)
 
-    # 写入 license.plist
     license_path = os.path.join(license_dir, "license.plist")
     with open(license_path, "wb") as f:
         plistlib.dump(license_dict, f)
 
     print("[license.plist] 已生成: %s" % license_path)
+    print("[license.plist] plan=%s  features=%s" % (plan, plan_features))
     print("[license.plist] code = %s" % license_dict["code"])
+    print("提示: 若功能未全解锁，改用 trial 路径(全解锁)或在 plan_features 填入实测 feature id")
     return True
 
 

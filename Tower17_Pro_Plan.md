@@ -34,16 +34,46 @@
 
 ---
 
-## 1. 待确认项(动手前必须锁死的逆向问题)
+## 1. 逆向结论(RE-1 / RE-4 已完成 ✅)
 
-| # | 问题 | 目的 | 方法 |
-|---|------|------|------|
-| RE-1 | `generateProLicense:` 生成器实现 | 拿到本地造 Pro license 的**确切字段与取值** | 定位 selector `generateProLicense:` 的 IMP(target 类),反编译 |
-| RE-2 | `GTLicenseActivationState` 的编码/解码格式 | 确定要写入的 blob 结构(JSON?plist?字段名) | 反编译 LicensingStore 的 load/persist,或 dump 运行时 UserDefaults 值 |
-| RE-3 | 解码时是否验签 | 排除「blob 内含服务器签名、解码时校验」 | 检查解码路径是否调用 CryptoKit / SecKey / HMAC |
-| RE-4 | `FeatureAvailability` / `ProFeatureSpec` 判定 Pro 的入口 | 确认「licenseType=license + plan=pro」即解锁,或需额外字段 | 反编译 FeatureAvailability 判定函数 |
+由于 17.x 保留旧 FNLicensing,路线 A 收敛为「用算号生成 license.plist / trial.plist」,不再需要 RE-2/RE-3
+(那是针对已被否定的「新 Swift blob」假设)。核实结果:
 
-> RE-1 ~ RE-3 决定「路线 A(造文件)」是否可行;RE-4 是两条路线共用的验收依据。
+### RE-1:授权机制(见 README「Tower 17.x 授权体系」)
+- 旧 FNLicensing 完整保留,salt 未变(`JuD324...`,运行时拼接混淆),`TowerCodeGenerator.py` 可用。
+- 调试 `generateProLicense:` 在 release 无实现;`GTLicenseActivationState`(Int) 为无签名缓存,非权威。
+
+### RE-4:license.plist 精确 schema + 算号算法(逆向 FNLicensing.framework 核实)
+
+**验证** `-[FNLicenseValidator validateProductLicense:]` = `generateHashForLicense == code`(纯 hash 比较,无其它校验)。
+
+**`-[FNProductLicense dictionaryRepresentation]` 输出的 key(= 算号输入):**
+
+| plist key | 来源属性 | 说明 |
+|-----------|---------|------|
+| `product` | productName | `tower` |
+| `user` | user | 算号时被 `config.userName` 覆盖(本机 = trial.plist 的 user) |
+| `machine` | machine | 算号时被 `config.machineUUID` 覆盖(本机 = trial.plist 的 machine) |
+| `type` | type | `LICENSE` / `TRIAL` |
+| `code` | code | MD5 结果(算号时被过滤,不参与) |
+| `uuid` | identifier | 任意 |
+| `license_code` | masked | 任意(掩码后的 license code) |
+| `email` | email | 任意邮箱 |
+| `expiration_date` | expires | 字符串,如 `2099-12-31T23:59:59Z` |
+| `revoked` | revoked | 字符串 `"true"`/`"false"` |
+| `plan` | plan | `pro` / `basic` |
+| `plan_features` | features | **数组**;算号时排序后逗号连接 |
+| `plan_uuid` | planIdentifier | 任意 |
+
+**算号(`hashSourceForDictionary:`)**:过滤 `code` → key 排序 → 逐个取值(`user`→config.userName、
+`machine`→config.machineUUID、数组排序后逗号连接、其余取原值)→ 逗号连接 → 拼 salt → MD5。
+
+> ⚠️ 可选属性为 nil 时不进字典,会改变算号 key 集 → 生成时**所有 key 都赋非空值**。
+> 已更新 `TowerCodeGenerator.py::generate_product_license` 按此 schema 生成,并自测 code 自洽通过。
+
+### 唯一未定变量
+- `plan_features` 应含哪些 feature id(正式 license 模式按此限功能)。**trial 模式不做功能检查=全解锁**,
+  故求稳可直接用 trial 路径;或在未打补丁二进制上实测确认 Pro 的 feature id 列表填入。
 
 ---
 
